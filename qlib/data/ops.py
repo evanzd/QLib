@@ -171,6 +171,32 @@ class Power(NpElemOperator):
         return getattr(np, self.func)(series, self.exponent)
 
 
+class Clip(NpElemOperator):
+    """Clip value
+
+    Parameters
+    ----------
+    feature : Expression
+        feature instance
+    low : float
+        lower bound
+    high : float
+        upper bound
+    """
+
+    def __init__(self, feature, low, high):
+        super(Clip, self).__init__(feature, "clip")
+        self.low = low
+        self.high = high
+
+    def __str__(self):
+        return "{}({},{},{})".format(type(self).__name__, self.feature, self.low, self.high)
+
+    def _load_internal(self, instrument, start_index, end_index, freq):
+        series = self.feature.load(instrument, start_index, end_index, freq)
+        return getattr(np, self.func)(series, self.low, self.high)
+
+
 class Mask(NpElemOperator):
     """Feature Mask
 
@@ -1087,6 +1113,8 @@ class Rank(Rolling):
         feature instance
     N : int
         rolling window size
+    which : int
+        use which value as the ranking target (default last)
 
     Returns
     ----------
@@ -1094,25 +1122,125 @@ class Rank(Rolling):
         a feature instance with rolling rank
     """
 
-    def __init__(self, feature, N):
+    def __init__(self, feature, N, which=-1):
         super(Rank, self).__init__(feature, N, "rank")
+
+        assert -N <= which < N, "invalid location"
+        self.which = which
+
+    def __str__(self):
+        return "{}({},{},{})".format(type(self).__name__, self.feature, self.N, self.which)
 
     def _load_internal(self, instrument, start_index, end_index, freq):
         series = self.feature.load(instrument, start_index, end_index, freq)
         # TODO: implement in Cython
 
         def rank(x):
-            if np.isnan(x[-1]):
+            if np.isnan(x[self.which]):
                 return np.nan
             x1 = x[~np.isnan(x)]
-            if x1.shape[0] == 0:
+            if len(x1) == 0:
                 return np.nan
-            return percentileofscore(x1, x1[-1]) / len(x1)
+            return percentileofscore(x1, x1[self.which]) / 100
 
         if self.N == 0:
             series = series.expanding(min_periods=1).apply(rank, raw=True)
         else:
             series = series.rolling(self.N, min_periods=1).apply(rank, raw=True)
+        return series
+
+
+class ZScore(Rolling):
+    """Rolling ZScore
+
+    Parameters
+    ----------
+    feature : Expression
+        feature instance
+    N : int
+        rolling window size
+    which : int
+        use which value as the zscore target (default last)
+
+    Returns
+    ----------
+    Expression
+        a feature instance with rolling zscore
+    """
+
+    def __init__(self, feature, N, which=-1):
+        super(ZScore, self).__init__(feature, N, "zscore")
+
+        assert -N <= which < N, "invalid location"
+        self.which = which
+
+    def __str__(self):
+        return "{}({},{},{})".format(type(self).__name__, self.feature, self.N, self.which)
+
+    def _load_internal(self, instrument, start_index, end_index, freq):
+        series = self.feature.load(instrument, start_index, end_index, freq)
+
+        def func(x):
+            if np.isnan(x[self.which]) or np.isnan(x).all():
+                return np.nan
+            mean = np.nanmean(x)
+            std = np.nanstd(x)
+            if std == 0:
+                return np.nan
+            return (x[self.which] - mean) / std
+
+        if self.N == 0:
+            series = series.expanding(min_periods=1).apply(func, raw=True)
+        else:
+            series = series.rolling(self.N, min_periods=1).apply(func, raw=True)
+        return series
+
+
+class RScore(Rolling):
+    """Rolling R(obust) (Z-)Score
+
+    MAD based Robust Zscore: https://en.wikipedia.org/wiki/Median_absolute_deviation
+
+    Parameters
+    ----------
+    feature : Expression
+        feature instance
+    N : int
+        rolling window size
+    which : int
+        use which value as the zscore target (default last)
+
+    Returns
+    ----------
+    Expression
+        a feature instance with rolling zscore
+    """
+
+    def __init__(self, feature, N, which=-1):
+        super(RScore, self).__init__(feature, N, "rscore")
+
+        assert -N <= which < N, "invalid location"
+        self.which = which
+
+    def __str__(self):
+        return "{}({},{},{})".format(type(self).__name__, self.feature, self.N, self.which)
+
+    def _load_internal(self, instrument, start_index, end_index, freq):
+        series = self.feature.load(instrument, start_index, end_index, freq)
+
+        def func(x):
+            if np.isnan(x[self.which]) or np.isnan(x).all():
+                return np.nan
+            med = np.nanmedian(x)
+            mad = np.nanmedian(np.abs(x - med))
+            if mad == 0:
+                return np.nan
+            return (x[self.which] - med) / mad / 1.4826
+
+        if self.N == 0:
+            series = series.expanding(min_periods=1).apply(func, raw=True)
+        else:
+            series = series.rolling(self.N, min_periods=1).apply(func, raw=True)
         return series
 
 
@@ -1483,6 +1611,9 @@ OpsList = [
     IdxMax,
     IdxMin,
     If,
+    ZScore,
+    RScore,
+    Clip,
 ]
 
 
